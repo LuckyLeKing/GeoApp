@@ -59,10 +59,15 @@ export default function WorldMapViewNative({ stateById, onCountryPress, currentC
             zoomControl: false,
             attributionControl: false,
             doubleClickZoom: false,
-            zoomSnap: 0,      // Smooth, fractional zoom
-            zoomDelta: 0.1,    // Ultra-fine zoom increments
+            zoomSnap: 0,      // Continuous zoom
+            zoomDelta: 0.25,  // Smooth delta
             zoomAnimation: true,
-            renderer: L.svg({ padding: 1.0 }) // Larger buffer for smooth animations
+            zoomAnimationThreshold: 10,
+            fadeAnimation: true,
+            renderer: L.svg({ 
+                padding: 1.5, // Increased padding to reduce "snapping" during pan/zoom
+                tolerance: 1  // Precision tolerance
+            })
         });
 
         var worldData = ${JSON.stringify(worldData)};
@@ -91,7 +96,7 @@ export default function WorldMapViewNative({ stateById, onCountryPress, currentC
         }
 
         geoJsonLayer = L.geoJSON(worldData, {
-            smoothFactor: 0, // Disable simplification to prevent quality "jumps" during zoom
+            smoothFactor: 0.1, // Minimal simplification to help performance without visual impact
             style: function(feature) {
                 return {
                     fillColor: colors.country.neutral,
@@ -113,19 +118,16 @@ export default function WorldMapViewNative({ stateById, onCountryPress, currentC
             }
         }).addTo(map);
 
-        // Force ultra-smooth rendering via continuous zoom sync
-        var raf = null;
-        map.on('zoom', function() {
-            if (raf) return;
-            raf = requestAnimationFrame(function() {
-                raf = null;
-                if (geoJsonLayer) {
-                    geoJsonLayer.setStyle({}); 
-                }
-            });
-        });
+        // Optimization: Use a debounced redraw for state updates only, not during continuous zoom
+        var updateTimeout = null;
+        function debouncedUpdate() {
+            if (updateTimeout) clearTimeout(updateTimeout);
+            updateTimeout = setTimeout(function() {
+                if (geoJsonLayer) geoJsonLayer.setStyle({});
+            }, 100);
+        }
 
-        // Initial update with potentially existing state
+        // Initial update
         updateStyles(currentStateById);
 
         window.addEventListener('message', function(event) {
