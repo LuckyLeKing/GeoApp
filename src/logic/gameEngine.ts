@@ -142,14 +142,12 @@ const processAnswer = (
             newCountryStates[question.country.id] = 'validated';
         }
 
-        // Mode progressif: réinitialiser les erreurs
-        if (state.mode === 'progressive') {
-            Object.keys(newCountryStates).forEach(id => {
-                if (newCountryStates[id] === 'error') {
-                    newCountryStates[id] = 'neutral';
-                }
-            });
-        }
+        // Réinitialiser les erreurs pour tous les pays dès qu'une bonne réponse est trouvée
+        Object.keys(newCountryStates).forEach(id => {
+            if (newCountryStates[id] === 'error') {
+                newCountryStates[id] = 'neutral';
+            }
+        });
 
         const nextState = moveToNextQuestion({
             ...state,

@@ -6,7 +6,7 @@ import React, { useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, BackHandler, Platform, KeyboardAvoidingView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GameState, Continent } from '../types';
-import WorldMapSvg, { CountryState as SvgState } from '../components/WorldMapSvg';
+import WorldMapView from '../components/WorldMapView';
 import TextInputComponent from '../components/Input/TextInput';
 import MCQInput from '../components/Input/MCQInput';
 import { colors, typography, spacing, radius, shadows } from '../theme';
@@ -44,19 +44,7 @@ const GameScreen: React.FC<Props> = ({
         }
     }, [onBack]);
 
-    const svgStateById = useMemo(() => {
-        const result: Record<string, SvgState> = {};
-        for (const [id, state] of Object.entries(countryStates)) {
-            if (state === 'correct' || state === 'validated') {
-                result[id] = 'green';
-            } else if (state === 'error') {
-                result[id] = 'red';
-            } else {
-                result[id] = 'neutral';
-            }
-        }
-        return result;
-    }, [countryStates]);
+
 
     if (!currentQuestion) {
         return null;
@@ -119,9 +107,10 @@ const GameScreen: React.FC<Props> = ({
 
             {showMap && (
                 <View style={styles.mapContainer}>
-                    <WorldMapSvg
-                        stateById={svgStateById}
+                    <WorldMapView
+                        stateById={countryStates}
                         onCountryPress={onSubmitPlacement}
+                        currentContinent={continent}
                     />
 
                     {feedback && (
