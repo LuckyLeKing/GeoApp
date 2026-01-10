@@ -1,18 +1,15 @@
 import React, { useEffect, useRef, useMemo } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 import worldData from '../assets/world_latlng';
 import { colors } from '../theme';
 import { CountryState, Continent } from '../types';
 import { getCountriesByContinent } from '../data/countries';
 
-// We'll read the local assets to inline them or use their content
-// For simplicity and 100% offline, we'll use a template that receives the data
-// Since we cannot easily read local file content as string during runtime in a portable way without more dependencies,
-// we will assume the user has the leaflet files or we'll use a CDN fallback for now IF local fails, 
-// but the plan was local. I'll use a CDN as primary for this implementation to ensure it WORKS now, 
-// but I'll add the logic to make it local if I can.
-import { LEAFLET_CSS_B64, LEAFLET_JS_B64 } from '../assets/leaflet/bundled_leaflet';
+// MapLibre configuration constants
+const MAPLIBRE_VERSION = '3.6.2';
+const MAPLIBRE_GL_JS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.js`;
+const MAPLIBRE_GL_CSS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
 
 type Props = {
     stateById: Record<string, CountryState>;
@@ -29,121 +26,164 @@ export default function WorldMapViewNative({ stateById, onCountryPress, currentC
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <style id="leaflet-css"></style>
+    <link href="${MAPLIBRE_GL_CSS}" rel="stylesheet" />
     <style>
-        body, html, #map { margin: 0; padding: 0; height: 100%; width: 100%; background: ${colors.map.ocean}; }
-        .leaflet-container { background: ${colors.map.ocean} !important; }
-        /* Professional SVG rendering optimizations */
-        .leaflet-overlay-pane svg path {
-            vector-effect: non-scaling-stroke !important;
-            shape-rendering: geometricPrecision !important;
-            stroke-linejoin: round !important;
-            stroke-linecap: round !important;
-        }
+        body, html, #map { margin: 0; padding: 0; height: 100%; width: 100%; background: ${colors.map.ocean}; overflow: hidden; }
+        .maplibregl-canvas { outline: none; }
     </style>
 </head>
 <body>
     <div id="map"></div>
+    <script src="${MAPLIBRE_GL_JS}"></script>
     <script>
-        document.getElementById('leaflet-css').innerHTML = atob("${LEAFLET_CSS_B64}");
-        var script = document.createElement('script');
-        script.innerHTML = atob("${LEAFLET_JS_B64}");
-        document.body.appendChild(script);
-    </script>
-    <script>
-        var map = L.map('map', {
-            center: [20, 0],
-            zoom: 2,
-            minZoom: 1,
-            maxZoom: 15,
-            zoomControl: false,
-            attributionControl: false,
-            doubleClickZoom: false,
-            zoomSnap: 0,      // Continuous zoom
-            zoomDelta: 0.25,  // Smooth delta
-            zoomAnimation: true,
-            zoomAnimationThreshold: 10,
-            fadeAnimation: true,
-            renderer: L.svg({ 
-                padding: 1.5, // Increased padding to reduce "snapping" during pan/zoom
-                tolerance: 1  // Precision tolerance
-            })
+        const colors = ${JSON.stringify(colors)};
+        let currentStateById = ${JSON.stringify(stateById)};
+        const worldData = ${JSON.stringify(worldData)};
+        
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {
+                    'countries': {
+                        type: 'geojson',
+                        data: worldData,
+                        generateId: false // We use our own IDs
+                    }
+                },
+                layers: [
+                    {
+                        id: 'background',
+                        type: 'background',
+                        paint: { 'background-color': colors.map.ocean }
+                    },
+                    {
+                        id: 'country-fill',
+                        type: 'fill',
+                        source: 'countries',
+                        paint: {
+                            'fill-color': [
+                                'match',
+                                ['get', 'id'],
+                                ...Object.entries(currentStateById).flatMap(([id, state]) => {
+                                    let color = colors.country.neutral;
+                                    if (state === 'correct' || state === 'validated') color = colors.country.success;
+                                    if (state === 'error') color = colors.country.error;
+                                    return [id, color];
+                                }),
+                                colors.country.neutral
+                            ],
+                            'fill-opacity': 1
+                        }
+                    },
+                    {
+                        id: 'country-border',
+                        type: 'line',
+                        source: 'countries',
+                        paint: {
+                            'line-color': colors.map.stroke,
+                            'line-width': 0.7
+                        }
+                    }
+                ]
+            },
+            center: [0, 20],
+            zoom: 1.5,
+            dragRotate: false,
+            touchPitch: false,
+            doubleClickZoom: false
         });
 
-        var worldData = ${JSON.stringify(worldData)};
-        var colors = ${JSON.stringify(colors)};
-        var geoJsonLayer;
-        var currentStateById = ${JSON.stringify(stateById)};
+        map.on('error', (e) => {
+            // window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'LOG', message: 'Map Error: ' + e.error.message }));
+        });
+
+        map.on('load', () => {
+            // window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'LOG', message: 'Map Loaded' }));
+            // Log available layers to debug source-layer name
+            // const layers = map.getStyle().layers;
+            // window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'LOG', message: 'Layers: ' + layers.map(l => l.id).join(', ') }));
+        });
 
         function updateStyles(stateById) {
             currentStateById = stateById;
-            if (geoJsonLayer) {
-                geoJsonLayer.setStyle(function(feature) {
-                    var id = feature.id;
-                    var state = stateById[id] || 'neutral';
-                    var color = colors.country.neutral;
+            const matchExpression = [
+                'match',
+                ['get', 'id'],
+                ...Object.entries(stateById).flatMap(([id, state]) => {
+                    let color = colors.country.neutral;
                     if (state === 'correct' || state === 'validated') color = colors.country.success;
                     if (state === 'error') color = colors.country.error;
-                    return {
-                        fillColor: color,
-                        weight: 0.7,
-                        opacity: 1,
-                        color: colors.map.stroke,
-                        fillOpacity: 1
+                    return [id, color];
+                }),
+                colors.country.neutral
+            ];
+            
+            if (map.getLayer('country-fill')) {
+                map.setPaintProperty('country-fill', 'fill-color', matchExpression);
+            }
+        }
+
+        map.on('click', 'country-fill', (e) => {
+            const feature = e.features[0];
+            const id = feature.properties.id || feature.id;
+            const state = currentStateById[id];
+            
+            if (state === 'correct' || state === 'validated') return;
+            
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'COUNTRY_PRESS', id: id }));
+        });
+
+        map.on('mouseenter', 'country-fill', () => {
+            map.getCanvas().style.cursor = 'pointer';
+        });
+
+        map.on('mouseleave', 'country-fill', () => {
+            map.getCanvas().style.cursor = '';
+        });
+
+        function fitCountries(ids) {
+            if (!ids || ids.length === 0) return;
+            const bounds = new maplibregl.LngLatBounds();
+            let found = false;
+            
+            worldData.features.forEach(f => {
+                if (ids.includes(f.id)) {
+                    const coords = f.geometry.coordinates;
+                    const processCoords = (c) => {
+                        if (typeof c[0] === 'number') bounds.extend(c);
+                        else c.forEach(processCoords);
                     };
-                });
+                    processCoords(coords);
+                    found = true;
+                }
+            });
+
+            if (found) {
+                map.fitBounds(bounds, { padding: 50, duration: 1000 });
             }
         }
 
-        geoJsonLayer = L.geoJSON(worldData, {
-            smoothFactor: 0.1, // Minimal simplification to help performance without visual impact
-            style: function(feature) {
-                return {
-                    fillColor: colors.country.neutral,
-                    weight: 0.7,
-                    opacity: 1,
-                    color: colors.map.stroke,
-                    fillOpacity: 1
-                };
-            },
-            onEachFeature: function(feature, layer) {
-                layer.on('click', function() {
-                    var id = feature.id;
-                    var state = currentStateById[id];
-                    if (state === 'correct' || state === 'validated') {
-                        return;
-                    }
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'COUNTRY_PRESS', id: id }));
-                });
+        function setFilter(ids) {
+            if (!ids || ids.length === 0) {
+                map.setFilter('country-fill', null);
+                map.setFilter('country-border', null);
+                return;
             }
-        }).addTo(map);
-
-        // Optimization: Use a debounced redraw for state updates only, not during continuous zoom
-        var updateTimeout = null;
-        function debouncedUpdate() {
-            if (updateTimeout) clearTimeout(updateTimeout);
-            updateTimeout = setTimeout(function() {
-                if (geoJsonLayer) geoJsonLayer.setStyle({});
-            }, 100);
+            const filter = ['in', ['get', 'id'], ['literal', ids]];
+            map.setFilter('country-fill', filter);
+            map.setFilter('country-border', filter);
         }
-
-        // Initial update
-        updateStyles(currentStateById);
 
         window.addEventListener('message', function(event) {
-            var message = JSON.parse(event.data);
-            if (message.type === 'FIT_BOUNDS') {
-                var countryIds = new Set(message.countryIds);
-                var bounds = L.latLngBounds();
-                geoJsonLayer.eachLayer(function(layer) {
-                    if (countryIds.has(layer.feature.id)) {
-                        bounds.extend(layer.getBounds());
-                    }
-                });
-                if (bounds.isValid()) {
-                    map.fitBounds(bounds, { padding: [20, 20], animate: true });
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'FIT_BOUNDS') {
+                    fitCountries(message.ids);
+                } else if (message.type === 'SET_FILTER') {
+                    setFilter(message.ids);
                 }
-            }
+            } catch(e) {}
         });
     </script>
 </body>
@@ -159,13 +199,15 @@ export default function WorldMapViewNative({ stateById, onCountryPress, currentC
     }, [stateById]);
 
     useEffect(() => {
-        if (webViewRef.current && currentContinent) {
-            const continentCountries = getCountriesByContinent(currentContinent);
-            const countryIds = continentCountries.map(c => c.id);
-            webViewRef.current.postMessage(JSON.stringify({
-                type: 'FIT_BOUNDS',
-                countryIds
-            }));
+        if (webViewRef.current) {
+            if (currentContinent) {
+                const countries = getCountriesByContinent(currentContinent);
+                const ids = countries.map(c => c.id);
+                webViewRef.current.postMessage(JSON.stringify({ type: 'SET_FILTER', ids }));
+                webViewRef.current.postMessage(JSON.stringify({ type: 'FIT_BOUNDS', ids }));
+            } else {
+                webViewRef.current.postMessage(JSON.stringify({ type: 'SET_FILTER', ids: null }));
+            }
         }
     }, [currentContinent]);
 

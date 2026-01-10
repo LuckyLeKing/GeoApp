@@ -1,7 +1,5 @@
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Platform } from 'react-native';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 import worldData from '../assets/world_latlng';
 import { colors } from '../theme';
 import { CountryState, Continent } from '../types';
@@ -13,120 +11,180 @@ type Props = {
     currentContinent?: Continent;
 };
 
+// MapLibre configuration constants
+const MAPLIBRE_VERSION = '3.6.2';
+const MAPLIBRE_GL_JS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.js`;
+const MAPLIBRE_GL_CSS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
+
 export default function WorldMapViewWeb({ stateById, onCountryPress, currentContinent }: Props) {
-    const mapRef = useRef<L.Map | null>(null);
-    const geoJsonRef = useRef<L.GeoJSON | null>(null);
+    const mapRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Initial map setup
     useEffect(() => {
-        if (!containerRef.current || mapRef.current) return;
+        if (!containerRef.current || mapRef.current || Platform.OS !== 'web') return;
 
-        const map = L.map(containerRef.current, {
-            center: [20, 0],
-            zoom: 2,
-            minZoom: 1,
-            maxZoom: 15,
-            zoomControl: true,
-            attributionControl: false,
-            doubleClickZoom: false,
-            zoomSnap: 0,
-            zoomDelta: 0.1,             // Ultra-fine zoom increments
-            wheelPxPerZoomLevel: 30,    // Smooth mouse wheel zooming
-            renderer: L.svg({ padding: 1.0 }), // Larger buffer for smooth animations
-        });
+        // Dynamically load MapLibre
+        const link = document.createElement('link');
+        link.href = MAPLIBRE_GL_CSS;
+        link.rel = 'stylesheet';
+        document.head.appendChild(link);
 
-        mapRef.current = map;
+        const script = document.createElement('script');
+        script.src = MAPLIBRE_GL_JS;
+        script.onload = () => {
+            // @ts-ignore
+            const maplibregl = window.maplibregl;
+            if (!maplibregl || !containerRef.current) return;
 
-        // Initialize GeoJSON layer once
-        const geoJson = L.geoJSON(worldData as any, {
-            // @ts-ignore - smoothFactor is valid for SVG layers
-            smoothFactor: 0, // Disable simplification to prevent quality "jumps" during zoom
-            style: () => ({
-                fillColor: colors.country.neutral,
-                weight: 0.7, // Sharp, consistent border
-                opacity: 1,
-                color: colors.map.stroke,
-                fillOpacity: 1,
-                // These classes will be targeted by CSS injected below
-                className: 'country-path',
-            }),
-            onEachFeature: (feature, layer) => {
-                layer.on({
-                    click: () => {
-                        const id = feature?.id as string;
-                        // Block interaction if already validated
-                        const currentState = stateById[id];
-                        if (currentState === 'correct' || currentState === 'validated') {
-                            return;
+            const map = new maplibregl.Map({
+                container: containerRef.current,
+                style: {
+                    version: 8,
+                    sources: {
+                        'countries': {
+                            type: 'geojson',
+                            data: worldData as any,
+                            generateId: false
                         }
-                        if (onCountryPress) onCountryPress(id);
                     },
-                });
-            },
-        }).addTo(map);
-
-        geoJsonRef.current = geoJson;
-
-        // Force ultra-smooth rendering via continuous zoom sync
-        let raf: number | null = null;
-        map.on('zoom', () => {
-            if (raf) return;
-            raf = requestAnimationFrame(() => {
-                raf = null;
-                // Leaflet automatically handles the transform, 
-                // but setting a style property again forces the renderer to keep 
-                // geometry aligned without "snapping" at zoomend.
-                if (geoJsonRef.current) {
-                    geoJsonRef.current.setStyle({});
-                }
+                    layers: [
+                        {
+                            id: 'background',
+                            type: 'background',
+                            paint: { 'background-color': colors.map.ocean }
+                        },
+                        {
+                            id: 'country-fill',
+                            type: 'fill',
+                            source: 'countries',
+                            paint: {
+                                'fill-color': [
+                                    'match',
+                                    ['get', 'id'],
+                                    ...Object.entries(stateById).flatMap(([id, state]) => {
+                                        let color = colors.country.neutral;
+                                        if (state === 'correct' || state === 'validated') color = colors.country.success;
+                                        if (state === 'error') color = colors.country.error;
+                                        return [id, color];
+                                    }),
+                                    colors.country.neutral
+                                ],
+                                'fill-opacity': 1
+                            }
+                        },
+                        {
+                            id: 'country-border',
+                            type: 'line',
+                            source: 'countries',
+                            paint: {
+                                'line-color': colors.map.stroke,
+                                'line-width': 0.7
+                            }
+                        }
+                    ]
+                },
+                center: [0, 20],
+                zoom: 1.5,
+                dragRotate: false,
+                touchPitch: false,
+                doubleClickZoom: false
             });
-        });
+
+            map.on('click', 'country-fill', (e: any) => {
+                const feature = e.features[0];
+                const id = feature.properties.id || feature.id;
+                if (onCountryPress) onCountryPress(id);
+            });
+
+            map.on('mouseenter', 'country-fill', () => {
+                map.getCanvas().style.cursor = 'pointer';
+            });
+
+            map.on('mouseleave', 'country-fill', () => {
+                map.getCanvas().style.cursor = '';
+            });
+
+            mapRef.current = map;
+        };
+        document.body.appendChild(script);
 
         return () => {
-            if (raf) cancelAnimationFrame(raf);
-            map.remove();
-            mapRef.current = null;
-            geoJsonRef.current = null;
+            if (mapRef.current) {
+                mapRef.current.remove();
+                mapRef.current = null;
+            }
         };
     }, []);
 
-    // Update GeoJSON layer styles when stateById changes
+    // Update styles when stateById changes
     useEffect(() => {
-        if (!geoJsonRef.current) return;
+        if (!mapRef.current) return;
 
-        geoJsonRef.current.setStyle((feature) => {
-            const id = feature?.id as string;
-            const state = stateById[id] || 'neutral';
-            let color = colors.country.neutral;
-            if (state === 'correct' || state === 'validated') color = colors.country.success;
-            if (state === 'error') color = colors.country.error;
+        const matchExpression = [
+            'match',
+            ['get', 'id'],
+            ...Object.entries(stateById).flatMap(([id, state]) => {
+                let color = colors.country.neutral;
+                if (state === 'correct' || state === 'validated') color = colors.country.success;
+                if (state === 'error') color = colors.country.error;
+                return [id, color];
+            }),
+            colors.country.neutral
+        ];
 
-            return {
-                fillColor: color,
-            };
-        });
+        if (mapRef.current.getLayer('country-fill')) {
+            mapRef.current.setPaintProperty('country-fill', 'fill-color', matchExpression);
+        }
     }, [stateById]);
 
-    // Handle continent zoom
+    // Handle continent zoom and filtering
     useEffect(() => {
-        if (!mapRef.current || !currentContinent || !geoJsonRef.current) return;
+        if (!mapRef.current) return;
 
-        const continentCountries = getCountriesByContinent(currentContinent);
-        const countryIds = new Set(continentCountries.map(c => c.id));
+        if (currentContinent) {
+            const countries = getCountriesByContinent(currentContinent);
+            const ids = countries.map(c => c.id);
 
-        const layerGroup = L.featureGroup();
-        geoJsonRef.current.eachLayer((layer: any) => {
-            if (countryIds.has(layer.feature.id)) {
-                layerGroup.addLayer(layer);
-            }
-        });
+            // @ts-ignore
+            const maplibregl = window.maplibregl;
+            if (!maplibregl) return;
 
-        if (layerGroup.getLayers().length > 0) {
-            mapRef.current.fitBounds(layerGroup.getBounds(), {
-                padding: [50, 50],
-                animate: true,
+            const bounds = new maplibregl.LngLatBounds();
+            let found = false;
+
+            (worldData as any).features.forEach((f: any) => {
+                if (ids.includes(f.id)) {
+                    const coords = f.geometry.coordinates;
+                    const processCoords = (c: any) => {
+                        if (typeof c[0] === 'number') bounds.extend(c);
+                        else c.forEach(processCoords);
+                    };
+                    processCoords(coords);
+                    found = true;
+                }
             });
+
+            if (found) {
+                mapRef.current.fitBounds(bounds, { padding: 50, duration: 1000 });
+            }
+
+            // Apply filter
+            const filter = ['in', ['get', 'id'], ['literal', ids]];
+            if (mapRef.current.getLayer('country-fill')) {
+                mapRef.current.setFilter('country-fill', filter);
+            }
+            if (mapRef.current.getLayer('country-border')) {
+                mapRef.current.setFilter('country-border', filter);
+            }
+        } else {
+            // Remove filter if no continent
+            if (mapRef.current.getLayer('country-fill')) {
+                mapRef.current.setFilter('country-fill', null);
+            }
+            if (mapRef.current.getLayer('country-border')) {
+                mapRef.current.setFilter('country-border', null);
+            }
         }
     }, [currentContinent]);
 
@@ -134,16 +192,6 @@ export default function WorldMapViewWeb({ stateById, onCountryPress, currentCont
 
     return (
         <View style={styles.container}>
-            <style dangerouslySetInnerHTML={{
-                __html: `
-                .leaflet-overlay-pane svg path {
-                    vector-effect: non-scaling-stroke !important;
-                    shape-rendering: geometricPrecision !important;
-                    stroke-linejoin: round !important;
-                    stroke-linecap: round !important;
-                }
-            `}} />
-            {/* @ts-ignore */}
             <div ref={containerRef} style={{ width: '100%', height: '100%', background: colors.map.ocean }} />
         </View>
     );
